@@ -141,6 +141,9 @@ td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
 .phase.ln{background:var(--warn-soft);color:var(--warn)}
 
 details.iserv{border-top:1px solid var(--line)}
+.aend{display:grid;gap:10px;padding:0 18px 18px}
+.aend .hint{margin:0;font-size:.9rem;color:var(--muted)}
+.st-body .aend{padding:0 0 4px}
 details.iserv > summary{cursor:pointer;padding:14px 18px;font-weight:700;color:var(--accent)}
 .iserv-body{padding:0 18px 18px;display:grid;gap:18px}
 .iserv-group{display:grid;gap:8px}
@@ -20855,6 +20858,76 @@ async function wordFor(ls,btn){
   catch(e){ toast("Word-Datei konnte nicht erstellt werden"); } finally{ btn.disabled=false; }
 }
 
+/* ---------- Nachbessern mit KI ---------- */
+let lastChange=null;
+const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+const LS_LABELS=[["titel","Titel"],["untertitel","Untertitel"],["leitfrage","Leitfrage"],["handlungssituation","Handlungssituation"],["handlungsergebnis","Handlungsergebnis"],["handlungskompetenz","Handlungskompetenz"],["rrl_kompetenzen","RRL-Kompetenzen"],["inhalte","Inhalte"],["kompetenzen","Fach- und Personale Kompetenz"],["schulische_entscheidungen","Schulische Entscheidungen"],["leistungsbewertung","Leistungsbewertung"],["distanzunterricht","Distanzunterricht"],["quellen","Quellen"]];
+const ST_LABELS=[["titel","Titel"],["stundenfrage","Stundenfrage"],["lernziel","Stundenziel"],["kompetenzen","Kompetenzen"],["frueherer_ausstieg","Früherer Stundenausstieg"],["reserve","Didaktische Reserve"],["differenzierung","Differenzierung"],["tafelbild","Tafelbild"],["anlagen","Anlagen"],["hausaufgabe_vor","Hausaufgabe vorher"],["hausaufgabe_nach","Hausaufgabe"]];
+function diffLS(a,b){ const out=[]; LS_LABELS.forEach(([k,l])=>{ if(!same(a[k],b[k])) out.push(l); });
+  if(a.start_woche!==b.start_woche||a.ende_woche!==b.ende_woche||a.dauer!==b.dauer) out.push("Zeitraum");
+  const n=Math.max(a.phasen.length,b.phasen.length); for(let i=0;i<n;i++) if(!same(a.phasen[i],b.phasen[i])) out.push("Handlungsphase „"+(b.phasen[i]||a.phasen[i]).phase+"“");
+  if(a.stunden.length!==b.stunden.length) out.push("Wochenplanung (Zeilen hinzugefügt oder entfernt)");
+  else a.stunden.forEach((r,i)=>{ if(!same(r,b.stunden[i])) out.push("Wochenplanung Woche "+b.stunden[i].woche); });
+  return out; }
+function diffSt(a,b){ const out=[]; ST_LABELS.forEach(([k,l])=>{ if(!same(a[k],b[k])) out.push(l); });
+  if(a.verlauf.length!==b.verlauf.length) out.push("Verlauf (Phasen hinzugefügt oder entfernt)");
+  else a.verlauf.forEach((r,i)=>{ if(!same(r,b.verlauf[i])) out.push("Phase „"+(b.verlauf[i].phase||i+1)+"“"); });
+  return out; }
+function lsCore(ls){ const k=["nummer","titel","untertitel","start_woche","ende_woche","dauer","leitfrage","handlungssituation","handlungsergebnis","handlungskompetenz","rrl_kompetenzen","inhalte","kompetenzen","schulische_entscheidungen","leistungsbewertung","distanzunterricht","phasen","stunden","quellen"]; const o={}; k.forEach(x=>o[x]=ls[x]); return o; }
+function stCore(st){ const o={...st}; ["woche","dauer","phase_ls","hinweise"].forEach(x=>delete o[x]); return o; }
+const AEND_RULES=[
+`- Ändere NUR, was der Änderungswunsch verlangt, und das, was dafür zwingend mit angepasst werden muss.`,
+`- Alle anderen Felder übernimmst du Wort für Wort unverändert. Nichts umformulieren, kürzen oder „verbessern“, was nicht verlangt ist.`,
+`- Keine Produkt- oder Markennamen, keine realen vollständigen Personennamen, keine erfundenen Quellen oder Paragrafen.`,
+`- Innerhalb von Texten nur deutsche Anführungszeichen „…“ verwenden, niemals gerade Anführungszeichen.`,
+`- Antworte NUR mit dem vollständigen JSON im selben Format, ohne Text davor oder danach.`];
+function aendPromptLS(ls,wish){ const inp=S.input, b=bgOf(inp.bg);
+  return [`Du bist erfahrene Politiklehrkraft an einer berufsbildenden Schule in Niedersachsen. Unten steht eine fertige Lernsituation (Grobplanung nach SchuCu-BBS 2024) als JSON. Überarbeite sie nach dem Änderungswunsch der Lehrkraft.`,``,
+    `Bildungsgang: ${b.name} (${b.sf}), Niveaustufe ${inp.niveau}`,`Lerngruppe: ${inp.lg.length?inp.lg.join(", "):"keine Besonderheiten"}`,``,
+    `ÄNDERUNGSWUNSCH DER LEHRKRAFT:`,wish,``,`REGELN`,...AEND_RULES,
+    `- Wochen und Stundenzahl bleiben gleich (Summe ${ls.dauer} Std.), solange der Wunsch nichts anderes verlangt. "rrl_kompetenzen" bleiben wörtlich.`,``,
+    `AKTUELLE FASSUNG:`,JSON.stringify({lernsituationen:[lsCore(ls)]},null,1)].join("\n"); }
+function aendPromptSt(ls,st,wish){ const inp=S.input, b=bgOf(inp.bg);
+  return [`Du bist erfahrene Politiklehrkraft und Fachseminarleitung an einer berufsbildenden Schule in Niedersachsen. Unten steht ein fertiger Unterrichtsverlauf für eine Stunde als JSON. Überarbeite ihn nach dem Änderungswunsch der Lehrkraft.`,``,
+    `Bildungsgang: ${b.name}, Niveaustufe ${inp.niveau}`,`Lerngruppe: ${inp.lg.length?inp.lg.join(", "):"keine Besonderheiten"}`,`Lernsituation: ${ls.titel}`,`Dauer der Stunde: ${st.dauer} Minuten`,``,
+    `ÄNDERUNGSWUNSCH DER LEHRKRAFT:`,wish,``,`REGELN`,...AEND_RULES,
+    `- Die Minuten aller Phasen ergeben weiterhin genau ${st.dauer}. Passe "zeit", Übergänge, Medien und "anlagen" nur an, wenn die Änderung es erfordert.`,``,
+    `AKTUELLE FASSUNG:`,JSON.stringify({stunde:stCore(st)},null,1)].join("\n"); }
+function aendBlock(o){
+  const w=document.createElement("div"); w.className="aend";
+  w.innerHTML=`<p class="hint">Kleinigkeiten kannst du oben direkt in den Text tippen. Für größere Änderungen hier den Wunsch eingeben: Die KI bekommt die aktuelle Fassung und soll nur das Genannte ändern. Danach siehst du, was sie tatsächlich geändert hat.</p>
+    <label>Was soll anders sein? <small>keine Schülerdaten</small><textarea class="a-w" rows="2" maxlength="600"></textarea></label>
+    <div class="row"><button class="btn primary small a-c" type="button">Änderungs-Prompt kopieren</button>${sampleFn?'<button class="btn small a-g" type="button">Direkt ändern</button>':""}</div>
+    <label>Antwort der KI<textarea class="a-a" rows="3" style="font-family:var(--f-mono);font-size:.85rem" placeholder="Komplette Antwort einfügen"></textarea></label>
+    <div class="row"><button class="btn small a-t" type="button">Änderung übernehmen</button></div><div class="note a-m" hidden></div>`;
+  w.querySelector(".a-w").placeholder=o.ph;
+  const m=w.querySelector(".a-m"); const say=(k,t)=>{ m.className="note a-m "+k; m.textContent=t; m.hidden=!t; };
+  const wish=()=>w.querySelector(".a-w").value.trim();
+  w.querySelector(".a-c").onclick=()=>{ if(!wish()){ say("warn","Schreib zuerst, was anders sein soll."); return; } say("",""); copy(o.prompt(wish())); };
+  const take=t=>{ if(!String(t||"").trim()){ say("warn","Das Feld ist leer. Füge die Antwort der KI ein."); return; } o.apply(t,say); };
+  w.querySelector(".a-t").onclick=()=>take(w.querySelector(".a-a").value);
+  w.querySelector(".a-a").addEventListener("paste",()=>setTimeout(()=>{ const v=w.querySelector(".a-a").value; if(v.trim().length>60) take(v); },0));
+  const g=w.querySelector(".a-g"); if(g) g.onclick=async()=>{ if(!wish()){ say("warn","Schreib zuerst, was anders sein soll."); return; } g.disabled=true; const t0=g.textContent; g.textContent="Claude denkt nach …"; try{ const {text}=await sampleFn(o.prompt(wish()),{modelTier:"default"}); take(text); }catch(e){ say("bad","Claude konnte nicht antworten. Kopiere den Prompt in eine andere KI."); } finally{ g.disabled=false; g.textContent=t0; } };
+  if(o.report){ const r=o.report, d=document.createElement("div"); d.style.cssText="display:grid;gap:8px";
+    const n=document.createElement("div");
+    if(r.fields.length){ n.className="note ok"; n.innerHTML="<strong>Übernommen. Die KI hat geändert:</strong> "; n.append(r.fields.join(", ")+". Bitte kurz prüfen, ob das zu deinem Wunsch passt."); }
+    else { n.className="note warn"; n.textContent="Die KI hat nichts geändert. Formuliere den Wunsch etwas genauer und versuche es noch einmal."; }
+    const row=document.createElement("div"); row.className="row"; row.innerHTML=`<button class="btn small u" type="button">Rückgängig machen</button><button class="btn ghost small fine" type="button">Passt so</button>`;
+    row.querySelector(".u").onclick=r.undo; row.querySelector(".fine").onclick=()=>{ lastChange=null; d.remove(); };
+    d.append(n,row); w.insertBefore(d,w.firstChild); }
+  return w;
+}
+function applyLS(li,text,say){
+  const pj=extractJSON(text); if(!pj.ok){ say("bad",JSON_MSG[pj.reason]); return; }
+  const o=pj.obj, raw=Array.isArray(o)?o[0]:(Array.isArray(o.lernsituationen)?o.lernsituationen[0]:o);
+  if(!raw||typeof raw!=="object"||!(raw.titel||raw.stunden)){ say("bad","Im JSON fehlt die Lernsituation. Hat die KI das vorgegebene Format genutzt?"); return; }
+  const L=S.plan.lernsituationen, old=L[li]; const nw=normLS(raw);
+  nw.lf=old.lf; nw.verlaeufe=old.verlaeufe; nw.meta=old.meta||metaFor(nw);
+  const fields=diffLS(normLS(lsCore(old)),nw); L[li]=nw;
+  lastChange={obj:nw, fields, undo:()=>{ const j=L.indexOf(nw); if(j>=0) L[j]=old; lastChange=null; save(); renderPrompts(); renderPlan(); toast("Änderung zurückgenommen"); }};
+  save(); renderPrompts(); renderPlan();
+}
+
 /* ---------- step 4 ---------- */
 function editable(el,get,set){ el.contentEditable="true"; el.textContent=get(); el.addEventListener("blur",()=>{ const v=el.innerText.replace(/ /g," ").trim(); if(v!==get()){ set(v); save(); renderPlan(); } }); }
 function cpRow(k,v){ const d=document.createElement("div"); d.className="cp"; d.innerHTML=`<span class="k"></span><span class="v"></span><button class="btn small" type="button">Kopieren</button>`; d.querySelector(".k").textContent=k; d.querySelector(".v").textContent=v||"–"; d.querySelector("button").onclick=()=>copy(v||""); return d; }
@@ -20962,6 +21035,15 @@ function renderStunde(ls,li,box){
         const slug=x=>String(x).replace(/[„“"]/g,"").replace(/[^\wäöüÄÖÜß]+/g,"_").replace(/^_|_$/g,"").slice(0,40);
         await saveFile(`LS${li+1}-Woche${String(st.woche).padStart(2,"0")}-${slug(st.titel||"Stunde")}.docx`, blob); }catch(err){ toast("Word-Datei konnte nicht erstellt werden"); } finally{ bt.disabled=false; } };
     let armed=false; v.querySelector(".x").onclick=e=>{ if(!armed){ armed=true; e.currentTarget.textContent="Wirklich löschen?"; return; } delete ls.verlaeufe[cur]; save(); renderStunde(ls,li,box); };
+    const mine=lastChange&&lastChange.obj===st;
+    const ad=document.createElement("details"); ad.className="iserv"; ad.innerHTML="<summary>Diese Stunde mit KI nachbessern</summary>"; if(mine) ad.open=true;
+    ad.appendChild(aendBlock({ph:"z. B. Der Einstieg soll mit einem kurzen Video statt mit dem Zeitungsartikel beginnen.", prompt:w=>aendPromptSt(ls,st,w), report:mine?lastChange:null,
+      apply:(t,say)=>{ const pj=extractJSON(t); if(!pj.ok){ say("bad",JSON_MSG[pj.reason]); return; }
+        const nw={...normStunde(pj.obj), woche:st.woche, dauer:st.dauer, phase_ls:st.phase_ls}; if(!nw.verlauf.length){ say("bad","Im JSON fehlt der Verlauf."); return; }
+        const fields=diffSt(normStunde(stCore(st)),nw); ls.verlaeufe[cur]=nw;
+        lastChange={obj:nw, fields, undo:()=>{ if(ls.verlaeufe[cur]===nw) ls.verlaeufe[cur]=st; lastChange=null; save(); box._i=cur; renderStunde(ls,li,box); toast("Änderung zurückgenommen"); }};
+        save(); box._i=cur; ls._cur=cur; renderStunde(ls,li,box); }}));
+    v.appendChild(ad);
     box.appendChild(v);
   }
 }
@@ -20975,6 +21057,7 @@ function renderPlan(){
     c.innerHTML=`<div class="ls-head"><h3></h3><span class="ls-meta">${esc(ls.nummer)} · Woche ${ls.start_woche}–${ls.ende_woche} · ${ls.dauer} Std.</span><span class="pill ${sum===ls.dauer?"ok":"warn"}">${sum===ls.dauer?"Stunden stimmen":"Summe "+sum+" statt "+ls.dauer+" Std."}</span></div>
       <div class="ls-actions"><button class="btn primary small w" type="button">SchuCu-Datei (Word)</button><button class="btn ghost small del" type="button">Entfernen</button></div>
       <div class="ls-body"><div class="fields"></div><div class="tablewrap"><table class="pt"><thead><tr><th style="width:18%">Handlungsphase</th><th>Die SuS …</th><th>Methoden, Medien, Materialien</th></tr></thead><tbody class="pb"></tbody></table></div><div class="tablewrap"><table><thead><tr><th>Woche</th><th>Std.</th><th>Phase</th><th>Thema</th><th>Lernziel</th><th>Sozialform, Medien</th><th>Ergebnis</th></tr></thead><tbody class="wb"></tbody></table></div></div>
+      <details class="iserv aend-d"><summary>Mit KI nachbessern</summary><div class="aend-body"></div></details>
       <details class="iserv stunden"><summary>Einzelne Stunden planen (Unterrichtsverlauf)</summary><div class="st-body"></div></details>
       <details class="iserv isv"><summary>Felder für iServ kopieren</summary><div class="iserv-body"></div></details>`;
     editable(c.querySelector("h3"),()=>ls.titel,v=>ls.titel=v);
@@ -20991,6 +21074,9 @@ function renderPlan(){
     ls.stunden.forEach(r=>{ const tr=document.createElement("tr"); tr.innerHTML=`<td class="n"></td><td class="n"></td><td><span class="phase ${r.phase==="Leistungsnachweis"?"ln":""}"></span></td><td><div class="cell"></div></td><td><div class="cell"></div></td><td><div class="cell"></div></td><td><div class="cell"></div></td>`; const td=tr.children;
       editable(td[0],()=>String(r.woche),v=>r.woche=int(v,r.woche)); editable(td[1],()=>String(r.stunden),v=>r.stunden=int(v,r.stunden)); editable(td[2].firstElementChild,()=>r.phase,v=>r.phase=v);
       ["thema","lernziel","ideen","ergebnis"].forEach((k,i)=>editable(td[3+i].firstElementChild,()=>r[k],v=>r[k]=v)); tb.appendChild(tr); });
+    const ad=c.querySelector("details.aend-d"), mine=lastChange&&lastChange.obj===ls;
+    ad.querySelector(".aend-body").appendChild(aendBlock({ph:"z. B. Die Handlungssituation soll in einem Supermarkt spielen. Oder: In Woche 3 statt Gruppenpuzzle ein Rollenspiel.", prompt:w=>aendPromptLS(ls,w), apply:(t,say)=>applyLS(li,t,say), report:mine?lastChange:null}));
+    if(mine) ad.open=true;
     const sd=c.querySelector("details.stunden"), sb=c.querySelector(".st-body");
     if(openPanels.has(li)) { sd.open=true; renderStunde(ls,li,sb); }
     sd.addEventListener("toggle",()=>{ if(sd.open){ openPanels.add(li); if(!sb.childElementCount) renderStunde(ls,li,sb); } else openPanels.delete(li); });
